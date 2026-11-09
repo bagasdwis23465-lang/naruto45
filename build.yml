@@ -1,0 +1,277 @@
+name: Build APK
+on:
+  workflow_dispatch:
+  push:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Buat project launcher
+        run: |
+          cat > settings.gradle <<'END_OF_FILE'
+          pluginManagement {
+              repositories { google(); mavenCentral(); gradlePluginPortal() }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories { google(); mavenCentral() }
+          }
+          rootProject.name = 'NinjaLauncher'
+          include ':app'
+          END_OF_FILE
+          cat > build.gradle <<'END_OF_FILE'
+          plugins {
+              id 'com.android.application' version '8.2.2' apply false
+          }
+          END_OF_FILE
+          cat > gradle.properties <<'END_OF_FILE'
+          org.gradle.jvmargs=-Xmx2g
+          android.useAndroidX=false
+          END_OF_FILE
+          mkdir -p app
+          cat > app/build.gradle <<'END_OF_FILE'
+          plugins {
+              id 'com.android.application'
+          }
+
+          android {
+              namespace 'com.example.ninjalauncher'
+              compileSdk 34
+
+              defaultConfig {
+                  applicationId "com.example.ninjalauncher"
+                  minSdk 21
+                  targetSdk 34
+                  versionCode 1
+                  versionName "1.0"
+              }
+
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+          }
+          END_OF_FILE
+          mkdir -p app/src/main
+          cat > app/src/main/AndroidManifest.xml <<'END_OF_FILE'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <!-- Agar app bisa membuka NetherSX2 -->
+              <queries>
+                  <package android:name="xyz.aethersx2.android" />
+              </queries>
+
+              <application
+                  android:icon="@drawable/ic_launcher"
+                  android:label="Ultimate Ninja 5 Launcher"
+                  android:allowBackup="false">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:theme="@android:style/Theme.Translucent.NoTitleBar">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          END_OF_FILE
+          mkdir -p app/src/main/java/com/example/ninjalauncher
+          cat > app/src/main/java/com/example/ninjalauncher/MainActivity.java <<'END_OF_FILE'
+          package com.example.ninjalauncher;
+
+          import android.app.Activity;
+          import android.app.AlertDialog;
+          import android.content.ComponentName;
+          import android.content.Intent;
+          import android.content.SharedPreferences;
+          import android.database.Cursor;
+          import android.net.Uri;
+          import android.os.Bundle;
+          import android.provider.DocumentsContract;
+          import android.widget.Toast;
+
+          import java.util.ArrayList;
+          import java.util.List;
+          import java.util.Locale;
+
+          public class MainActivity extends Activity {
+
+              // NetherSX2 memakai paket dan activity yang sama dengan AetherSX2.
+              private static final String EMU_PACKAGE = "xyz.aethersx2.android";
+              private static final String EMU_ACTIVITY = "xyz.aethersx2.android.EmulationActivity";
+
+              // Kata kunci nama file game (tidak peka huruf besar/kecil, tanda baca diabaikan).
+              private static final String[] KEYWORDS = {"naruto", "ninja 5"};
+              private static final String[] EXTENSIONS = {".iso", ".chd", ".cso", ".bin", ".gz", ".zso", ".img", ".mdf"};
+
+              private static final int REQ_TREE = 1;
+              private SharedPreferences prefs;
+
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  prefs = getSharedPreferences("launcher", MODE_PRIVATE);
+
+                  String game = prefs.getString("game", null);
+                  if (game != null) {
+                      launch(game);
+                      return;
+                  }
+                  String tree = prefs.getString("tree", null);
+                  if (tree != null) {
+                      findGame(Uri.parse(tree));
+                  } else {
+                      pickFolder();
+                  }
+              }
+
+              private void pickFolder() {
+                  Toast.makeText(this, "Pilih folder game PS2 yang SAMA dengan folder di NetherSX2",
+                          Toast.LENGTH_LONG).show();
+                  Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+                  i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
+                          | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+                          | Intent.FLAG_GRANT_PREFIX_URI_PERMISSION);
+                  startActivityForResult(i, REQ_TREE);
+              }
+
+              @Override
+              protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+                  super.onActivityResult(requestCode, resultCode, data);
+                  if (requestCode == REQ_TREE && resultCode == RESULT_OK && data != null && data.getData() != null) {
+                      Uri tree = data.getData();
+                      try {
+                          getContentResolver().takePersistableUriPermission(tree, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                      } catch (Exception ignored) {
+                      }
+                      prefs.edit().putString("tree", tree.toString()).apply();
+                      findGame(tree);
+                  } else {
+                      finish();
+                  }
+              }
+
+              private void findGame(Uri tree) {
+                  List<String[]> files = new ArrayList<>();
+                  scan(tree, DocumentsContract.getTreeDocumentId(tree), 0, files);
+
+                  List<String[]> matches = new ArrayList<>();
+                  for (String[] f : files) {
+                      if (matchesKeywords(f[0])) matches.add(f);
+                  }
+
+                  if (matches.size() == 1) {
+                      saveAndLaunch(matches.get(0)[1]);
+                      return;
+                  }
+
+                  final List<String[]> list = matches.isEmpty() ? files : matches;
+                  if (list.isEmpty()) {
+                      prefs.edit().remove("tree").apply();
+                      Toast.makeText(this, "Tidak ada file game (.iso/.chd) di folder itu. Buka app lagi lalu pilih folder lain.",
+                              Toast.LENGTH_LONG).show();
+                      finish();
+                      return;
+                  }
+
+                  String[] names = new String[list.size()];
+                  for (int i = 0; i < names.length; i++) names[i] = list.get(i)[0];
+
+                  new AlertDialog.Builder(this)
+                          .setTitle("Pilih game")
+                          .setItems(names, (dialog, which) -> saveAndLaunch(list.get(which)[1]))
+                          .setOnCancelListener(dialog -> finish())
+                          .show();
+              }
+
+              private void scan(Uri tree, String parentId, int depth, List<String[]> out) {
+                  Uri children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, parentId);
+                  Cursor c = null;
+                  try {
+                      c = getContentResolver().query(children, new String[]{
+                              DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                              DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                              DocumentsContract.Document.COLUMN_MIME_TYPE}, null, null, null);
+                      if (c == null) return;
+                      while (c.moveToNext()) {
+                          String id = c.getString(0);
+                          String name = c.getString(1);
+                          String mime = c.getString(2);
+                          if (DocumentsContract.Document.MIME_TYPE_DIR.equals(mime)) {
+                              if (depth < 2) scan(tree, id, depth + 1, out);
+                          } else if (hasGameExtension(name)) {
+                              out.add(new String[]{name, DocumentsContract.buildDocumentUriUsingTree(tree, id).toString()});
+                          }
+                      }
+                  } catch (Exception ignored) {
+                  } finally {
+                      if (c != null) c.close();
+                  }
+              }
+
+              private boolean hasGameExtension(String name) {
+                  if (name == null) return false;
+                  String n = name.toLowerCase(Locale.ROOT);
+                  for (String ext : EXTENSIONS) {
+                      if (n.endsWith(ext)) return true;
+                  }
+                  return false;
+              }
+
+              private boolean matchesKeywords(String fileName) {
+                  String n = fileName.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]+", " ").trim();
+                  for (String k : KEYWORDS) {
+                      if (!n.contains(k)) return false;
+                  }
+                  return true;
+              }
+
+              private void saveAndLaunch(String gameUri) {
+                  prefs.edit().putString("game", gameUri).apply();
+                  launch(gameUri);
+              }
+
+              private void launch(String gameUri) {
+                  try {
+                      Intent intent = new Intent(Intent.ACTION_MAIN);
+                      intent.setComponent(new ComponentName(EMU_PACKAGE, EMU_ACTIVITY));
+                      intent.putExtra("bootPath", gameUri);
+                      intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+                      startActivity(intent);
+                  } catch (Exception e) {
+                      Toast.makeText(this, "Gagal membuka NetherSX2. Pastikan sudah terpasang.",
+                              Toast.LENGTH_LONG).show();
+                  }
+                  finish();
+              }
+          }
+          END_OF_FILE
+          mkdir -p app/src/main/res/drawable
+          cat > app/src/main/res/drawable/ic_launcher.xml <<'END_OF_FILE'
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp"
+              android:height="108dp"
+              android:viewportWidth="108"
+              android:viewportHeight="108">
+              <path android:fillColor="#1B1F2A" android:pathData="M54,54m-54,0a54,54 0,1 1,108 0a54,54 0,1 1,-108 0" />
+              <path android:fillColor="#FF7A1A" android:pathData="M54,22 L62,46 L86,54 L62,62 L54,86 L46,62 L22,54 L46,46 Z" />
+              <path android:fillColor="#1B1F2A" android:pathData="M54,54m-6,0a6,6 0,1 1,12 0a6,6 0,1 1,-12 0" />
+          </vector>
+          END_OF_FILE
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: 8.5
+      - run: gradle assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: UltimateNinja5Launcher-apk
+          path: app/build/outputs/apk/debug/*.apk
